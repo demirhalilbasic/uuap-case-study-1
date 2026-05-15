@@ -38,15 +38,15 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Mapiranje naziva fajlova na citljive labele (bosanski)
-LABELE_VRSTA = {
+# Mapiranje naziva fajlova na citljive labels (bosanski)
+SPECIES_LABELS = {
     "bombina_bombina":   "B. bombina\n(Crveno-trbusna)",
     "bombina_variegata": "B. variegata\n(Zuto-trbusna)",
     "rana_temporaria":   "R. temporaria\n(Europska smedja)",
 }
 
-# Kratke labele za classification report (bez newline)
-KRATKE_LABELE = {
+# Kratke labels za classification report (bez newline)
+SHORT_LABELS = {
     "bombina_bombina":   "B. bombina",
     "bombina_variegata": "B. variegata",
     "rana_temporaria":   "R. temporaria",
@@ -56,37 +56,37 @@ KRATKE_LABELE = {
 # ============================================================================
 # 2. UCITAVANJE FASTA PODATAKA
 # ============================================================================
-def ucitaj_fasta(putanja_fajla):
-    """Ucitava sekvence iz FASTA fajla. Vraca listu sekvenci (stringova)."""
-    sekvence = []
-    with open(putanja_fajla, "r") as f:
+def load_fasta(file_path):
+    """Ucitava sequences iz FASTA fajla. Vraca listu sekvenci (stringova)."""
+    sequences = []
+    with open(file_path, "r") as f:
         seq = ""
-        for linija in f:
-            if linija.startswith(">"):
+        for line in f:
+            if line.startswith(">"):
                 if seq:
-                    sekvence.append(seq)
+                    sequences.append(seq)
                 seq = ""
             else:
-                seq += linija.strip().upper()
+                seq += line.strip().upper()
         if seq:
-            sekvence.append(seq)
-    return sekvence
+            sequences.append(seq)
+    return sequences
 
 
-def fragmentiraj_sekvencu(sekvenca, velicina_prozora=1000, korak=500):
+def fragment_sequence(sequence, window_size=1000, step=500):
     """
     Dijeli dugacku sekvencu na preklapajuce fragmente.
     Ovo je potrebno jer svaki FASTA fajl sadrzi samo jednu sekvencu
     (kompletni mitohondrijalni genom ~17kb), a za analizu i klasifikaciju
     trebamo vise uzoraka po vrsti.
     """
-    fragmenti = []
-    for i in range(0, len(sekvenca) - velicina_prozora + 1, korak):
-        fragment = sekvenca[i:i + velicina_prozora]
+    fragments = []
+    for i in range(0, len(sequence) - window_size + 1, step):
+        fragment = sequence[i:i + window_size]
         # Preskoci fragmente koji sadrze nevalidne karaktere
         if all(c in "ACGT" for c in fragment):
-            fragmenti.append(fragment)
-    return fragmenti
+            fragments.append(fragment)
+    return fragments
 
 
 # ============================================================================
@@ -96,62 +96,62 @@ print("=" * 65)
 print("  UCITAVANJE PODATAKA")
 print("=" * 65)
 
-sekvence = []
-labele = []
+sequences = []
+labels = []
 
-for naziv_fajla in sorted(os.listdir(DATA_DIR)):
-    if naziv_fajla.endswith(".fasta"):
-        naziv_vrste = naziv_fajla.replace(".fasta", "")
-        putanja = os.path.join(DATA_DIR, naziv_fajla)
+for filename in sorted(os.listdir(DATA_DIR)):
+    if filename.endswith(".fasta"):
+        species_name = filename.replace(".fasta", "")
+        current_file_path = os.path.join(DATA_DIR, filename)
 
-        ucitane_sekvence = ucitaj_fasta(putanja)
-        print(f"  Fajl: {naziv_fajla}")
-        print(f"    Originalne sekvence: {len(ucitane_sekvence)}")
-        print(f"    Duzina genoma: {len(ucitane_sekvence[0])} bp")
+        loaded_sequences = load_fasta(current_file_path)
+        print(f"  Fajl: {filename}")
+        print(f"    Originalne sekvence: {len(loaded_sequences)}")
+        print(f"    Duzina genoma: {len(loaded_sequences[0])} bp")
 
         # Fragmentacija genoma na manje dijelove
-        svi_fragmenti = []
-        for seq in ucitane_sekvence:
-            fragmenti = fragmentiraj_sekvencu(seq, velicina_prozora=1000, korak=500)
-            svi_fragmenti.extend(fragmenti)
+        all_fragments = []
+        for seq in loaded_sequences:
+            fragments = fragment_sequence(seq, window_size=1000, step=500)
+            all_fragments.extend(fragments)
 
-        print(f"    Generisani fragmenti: {len(svi_fragmenti)}")
-        sekvence.extend(svi_fragmenti)
-        labele.extend([naziv_vrste] * len(svi_fragmenti))
+        print(f"    Generisani fragmenti: {len(all_fragments)}")
+        sequences.extend(all_fragments)
+        labels.extend([species_name] * len(all_fragments))
 
-print(f"\nUkupno ucitano {len(sekvence)} fragmenata iz {len(set(labele))} vrste")
+print(f"\nUkupno ucitano {len(sequences)} fragmenata iz {len(set(labels))} vrste")
 print()
 
 
 # ============================================================================
 # 4. EKSTRAKCIJA K-MER ZNACAJKI (FEATURE ENGINEERING)
 # ============================================================================
-def kmer_frekvencija(sekvenca, k):
+def kmer_frequency(sequence, k):
     """Broji sve k-mere u sekvenci i vraca Counter objekat."""
-    kmeri = [sekvenca[i:i+k] for i in range(len(sekvenca) - k + 1)]
-    brojac = Counter(kmeri)
-    return brojac
+    kmers = [sequence[i:i+k] for i in range(len(sequence) - k + 1)]
+    counts = Counter(kmers)
+    return counts
 
 
-def izgradi_kmer_matricu(sekvence, k):
+def build_kmer_matrix(sequences, k):
     """
     Gradi matricu znacajki: svaki red je jedan fragment,
     svaki stupac je jedan k-mer, vrijednost je frekvencija.
     """
-    svi_kmeri = set()
-    kmer_brojaci = []
+    all_kmers = set()
+    kmer_counts = []
 
-    for seq in sekvence:
-        brojac = kmer_frekvencija(seq, k)
-        kmer_brojaci.append(brojac)
-        svi_kmeri.update(brojac.keys())
+    for seq in sequences:
+        counts = kmer_frequency(seq, k)
+        kmer_counts.append(counts)
+        all_kmers.update(counts.keys())
 
-    svi_kmeri = sorted(svi_kmeri)
-    X = np.zeros((len(sekvence), len(svi_kmeri)))
+    all_kmers = sorted(all_kmers)
+    X = np.zeros((len(sequences), len(all_kmers)))
 
-    for i, brojac in enumerate(kmer_brojaci):
-        for j, kmer in enumerate(svi_kmeri):
-            X[i, j] = brojac.get(kmer, 0)
+    for i, counts in enumerate(kmer_counts):
+        for j, kmer in enumerate(all_kmers):
+            X[i, j] = counts.get(kmer, 0)
 
     return X
 
@@ -164,30 +164,30 @@ print("  OSNOVNI PIPELINE (k=4)")
 print("=" * 65)
 
 k = 4
-X = izgradi_kmer_matricu(sekvence, k)
+X = build_kmer_matrix(sequences, k)
 print(f"  Matrica znacajki: {X.shape[0]} uzoraka x {X.shape[1]} k-mera (k={k})")
 
 # Standardizacija (StandardScaler)
-skaler = StandardScaler()
-X_skalirano = skaler.fit_transform(X)
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
 
 # PCA redukcija na 2 komponente
 pca = PCA(n_components=2)
-X_pca = pca.fit_transform(X_skalirano)
+X_pca = pca.fit_transform(X_scaled)
 
 print(f"  PCA objasnjena varijansa: PC1={pca.explained_variance_ratio_[0]:.2%}, "
       f"PC2={pca.explained_variance_ratio_[1]:.2%}")
 
 # --- PCA vizualizacija ---
 plt.figure(figsize=(9, 7))
-jedinstvene_labele = sorted(set(labele))
-boje = ["#e74c3c", "#f39c12", "#2ecc71"]  # crvena, zuta, zelena
+unique_labels = sorted(set(labels))
+colors = ["#e74c3c", "#f39c12", "#2ecc71"]  # crvena, zuta, zelena
 
-for idx_boje, lab in enumerate(jedinstvene_labele):
-    indeksi = [i for i, l in enumerate(labele) if l == lab]
-    plt.scatter(X_pca[indeksi, 0], X_pca[indeksi, 1],
-                label=LABELE_VRSTA.get(lab, lab),
-                color=boje[idx_boje], alpha=0.7, edgecolors="black", linewidths=0.3, s=50)
+for color_idx, lab in enumerate(unique_labels):
+    indices = [i for i, l in enumerate(labels) if l == lab]
+    plt.scatter(X_pca[indices, 0], X_pca[indices, 1],
+                label=SPECIES_LABELS.get(lab, lab),
+                color=colors[color_idx], alpha=0.7, edgecolors="black", linewidths=0.3, s=50)
 
 plt.xlabel(f"Prva glavna komponenta (PC1) — {pca.explained_variance_ratio_[0]:.1%} varijanse",
            fontsize=11)
@@ -202,25 +202,25 @@ plt.close()
 print("  Sacuvan grafikon: output/pca_k4_osnovni.png")
 
 # --- Klasifikacija (Logisticka regresija) ---
-mapa_labela = {lab: i for i, lab in enumerate(jedinstvene_labele)}
-y = np.array([mapa_labela[l] for l in labele])
+label_map = {lab: i for i, lab in enumerate(unique_labels)}
+y = np.array([label_map[l] for l in labels])
 
-X_trening, X_test, y_trening, y_test = train_test_split(
-    X_skalirano, y, test_size=0.2, random_state=42, stratify=y
+X_train, X_test, y_train, y_test = train_test_split(
+    X_scaled, y, test_size=0.2, random_state=42, stratify=y
 )
 
 model_lr = LogisticRegression(max_iter=1000, random_state=42)
-model_lr.fit(X_trening, y_trening)
+model_lr.fit(X_train, y_train)
 y_pred = model_lr.predict(X_test)
 
-nazivi_klasa = [KRATKE_LABELE.get(lab, lab) for lab in jedinstvene_labele]
+class_names = [SHORT_LABELS.get(lab, lab) for lab in unique_labels]
 print("\n  Rezultati klasifikacije (Logisticka regresija, k=4):")
-print(classification_report(y_test, y_pred, target_names=nazivi_klasa))
+print(classification_report(y_test, y_pred, target_names=class_names))
 
 # Matrica konfuzije
 cm = confusion_matrix(y_test, y_pred)
 fig, ax = plt.subplots(figsize=(7, 6))
-disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=nazivi_klasa)
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
 disp.plot(ax=ax, cmap="Blues", colorbar=True)
 ax.set_title("Matrica konfuzije — Logisticka regresija (k=4)", fontsize=12, fontweight="bold")
 ax.set_xlabel("Predvidjena klasa", fontsize=11)
@@ -232,26 +232,26 @@ print("  Sacuvan grafikon: output/matrica_konfuzije_lr_k4.png")
 
 
 # ============================================================================
-# 6. ZADATAK 1: Promjena k od 3 do 6 — poredenje PCA separacije i tacnosti
+# 6. ZADATAK 1: Promjena k od 3 do 6 — poredenje PCA separacije i accuracies
 # ============================================================================
 print("\n" + "=" * 65)
 print("  ZADATAK 1: Poredenje razlicitih vrijednosti k (3, 4, 5, 6)")
 print("=" * 65)
 
 fig_pca, axes_pca = plt.subplots(2, 2, figsize=(14, 12))
-rezultati_k = {}
+results_k = {}
 
 for idx_k, k_val in enumerate([3, 4, 5, 6]):
     print(f"\n  --- k = {k_val} ---")
-    X_k = izgradi_kmer_matricu(sekvence, k_val)
+    X_k = build_kmer_matrix(sequences, k_val)
     print(f"  Dimenzije matrice: {X_k.shape}")
 
     # Skaliranje i PCA
-    skaler_k = StandardScaler()
-    X_k_skal = skaler_k.fit_transform(X_k)
+    scaler_k = StandardScaler()
+    X_k_scaled = scaler_k.fit_transform(X_k)
 
     pca_k = PCA(n_components=2)
-    X_k_pca = pca_k.fit_transform(X_k_skal)
+    X_k_pca = pca_k.fit_transform(X_k_scaled)
 
     var_pc1 = pca_k.explained_variance_ratio_[0]
     var_pc2 = pca_k.explained_variance_ratio_[1]
@@ -259,11 +259,11 @@ for idx_k, k_val in enumerate([3, 4, 5, 6]):
 
     # PCA grafikon
     ax = axes_pca[idx_k // 2][idx_k % 2]
-    for idx_boje, lab in enumerate(jedinstvene_labele):
-        indeksi = [i for i, l in enumerate(labele) if l == lab]
-        ax.scatter(X_k_pca[indeksi, 0], X_k_pca[indeksi, 1],
-                   label=KRATKE_LABELE.get(lab, lab),
-                   color=boje[idx_boje], alpha=0.7, edgecolors="black", linewidths=0.3, s=40)
+    for color_idx, lab in enumerate(unique_labels):
+        indices = [i for i, l in enumerate(labels) if l == lab]
+        ax.scatter(X_k_pca[indices, 0], X_k_pca[indices, 1],
+                   label=SHORT_LABELS.get(lab, lab),
+                   color=colors[color_idx], alpha=0.7, edgecolors="black", linewidths=0.3, s=40)
     ax.set_xlabel(f"PC1 ({var_pc1:.1%})", fontsize=10)
     ax.set_ylabel(f"PC2 ({var_pc2:.1%})", fontsize=10)
     ax.set_title(f"k = {k_val}  (ukupno {X_k.shape[1]} znacajki)", fontsize=11, fontweight="bold")
@@ -272,15 +272,15 @@ for idx_k, k_val in enumerate([3, 4, 5, 6]):
 
     # Klasifikacija
     X_tr, X_te, y_tr, y_te = train_test_split(
-        X_k_skal, y, test_size=0.2, random_state=42, stratify=y
+        X_k_scaled, y, test_size=0.2, random_state=42, stratify=y
     )
     model_k = LogisticRegression(max_iter=1000, random_state=42)
     model_k.fit(X_tr, y_tr)
     y_pred_k = model_k.predict(X_te)
-    tacnost = np.mean(y_pred_k == y_te)
-    rezultati_k[k_val] = tacnost
-    print(f"  Tacnost klasifikatora: {tacnost:.2%}")
-    print(classification_report(y_te, y_pred_k, target_names=nazivi_klasa))
+    accuracy = np.mean(y_pred_k == y_te)
+    results_k[k_val] = accuracy
+    print(f"  Tacnost klasifikatora: {accuracy:.2%}")
+    print(classification_report(y_te, y_pred_k, target_names=class_names))
 
 fig_pca.suptitle("Poredenje PCA vizualizacija za razlicite vrijednosti k",
                  fontsize=14, fontweight="bold", y=1.01)
@@ -289,19 +289,19 @@ fig_pca.savefig(os.path.join(OUTPUT_DIR, "zadatak1_pca_poredenje.png"), dpi=150,
 plt.close(fig_pca)
 print("  Sacuvan grafikon: output/zadatak1_pca_poredenje.png")
 
-# Grafikon tacnosti po k
+# Grafikon accuracies po k
 plt.figure(figsize=(8, 5))
-k_vrijednosti = list(rezultati_k.keys())
-tacnosti = list(rezultati_k.values())
-plt.bar(k_vrijednosti, [t * 100 for t in tacnosti], color=["#3498db", "#e74c3c", "#2ecc71", "#9b59b6"],
+k_values = list(results_k.keys())
+accuracies = list(results_k.values())
+plt.bar(k_values, [t * 100 for t in accuracies], color=["#3498db", "#e74c3c", "#2ecc71", "#9b59b6"],
         edgecolor="black", linewidth=0.5)
 plt.xlabel("Vrijednost k", fontsize=12)
 plt.ylabel("Tacnost klasifikatora (%)", fontsize=12)
 plt.title("Tacnost logisticke regresije za razlicite vrijednosti k", fontsize=13, fontweight="bold")
-plt.xticks(k_vrijednosti)
+plt.xticks(k_values)
 plt.ylim(0, 105)
-for i, t in enumerate(tacnosti):
-    plt.text(k_vrijednosti[i], t * 100 + 1.5, f"{t:.1%}", ha="center", fontsize=11, fontweight="bold")
+for i, t in enumerate(accuracies):
+    plt.text(k_values[i], t * 100 + 1.5, f"{t:.1%}", ha="center", fontsize=11, fontweight="bold")
 plt.grid(axis="y", alpha=0.3)
 plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, "zadatak1_tacnost_po_k.png"), dpi=150)
@@ -309,8 +309,8 @@ plt.close()
 print("  Sacuvan grafikon: output/zadatak1_tacnost_po_k.png")
 
 # Prikaz najboljeg k
-najbolji_k = max(rezultati_k, key=rezultati_k.get)
-print(f"\n  Najbolji k = {najbolji_k} sa tacnoscu {rezultati_k[najbolji_k]:.2%}")
+best_k = max(results_k, key=results_k.get)
+print(f"\n  Najbolji k = {best_k} sa tacnoscu {results_k[best_k]:.2%}")
 
 
 # ============================================================================
@@ -321,37 +321,37 @@ print("  ZADATAK 2: Trening na samo dvije vrste (bez R. temporaria)")
 print("=" * 65)
 
 # Filtriranje: zadrzavamo samo Bombina vrste
-indeksi_2vrste = [i for i, l in enumerate(labele)
+indices_2species = [i for i, l in enumerate(labels)
                   if l in ("bombina_bombina", "bombina_variegata")]
 
-sekvence_2 = [sekvence[i] for i in indeksi_2vrste]
-labele_2 = [labele[i] for i in indeksi_2vrste]
+sequences_2 = [sequences[i] for i in indices_2species]
+labels_2 = [labels[i] for i in indices_2species]
 
-jedinstvene_2 = sorted(set(labele_2))
-mapa_2 = {lab: i for i, lab in enumerate(jedinstvene_2)}
-y_2 = np.array([mapa_2[l] for l in labele_2])
-nazivi_2 = [KRATKE_LABELE.get(lab, lab) for lab in jedinstvene_2]
+unique_2 = sorted(set(labels_2))
+map_2 = {lab: i for i, lab in enumerate(unique_2)}
+y_2 = np.array([map_2[l] for l in labels_2])
+names_2 = [SHORT_LABELS.get(lab, lab) for lab in unique_2]
 
 # Poredenje k=4 i k=6 za dvije Bombina vrste
 fig_z2, axes_z2 = plt.subplots(1, 2, figsize=(14, 6))
-boje_2 = ["#e74c3c", "#f39c12"]
-tacnost_2_po_k = {}
+colors_2 = ["#e74c3c", "#f39c12"]
+accuracy_2_by_k = {}
 
 for idx_z2, k_z2 in enumerate([4, 6]):
-    X_2 = izgradi_kmer_matricu(sekvence_2, k=k_z2)
-    skaler_2 = StandardScaler()
-    X_2_skal = skaler_2.fit_transform(X_2)
+    X_2 = build_kmer_matrix(sequences_2, k=k_z2)
+    scaler_2 = StandardScaler()
+    X_2_scaled = scaler_2.fit_transform(X_2)
 
     pca_2 = PCA(n_components=2)
-    X_2_pca = pca_2.fit_transform(X_2_skal)
+    X_2_pca = pca_2.fit_transform(X_2_scaled)
 
     # PCA grafikon
     ax = axes_z2[idx_z2]
-    for idx_boje, lab in enumerate(jedinstvene_2):
-        indeksi = [i for i, l in enumerate(labele_2) if l == lab]
-        ax.scatter(X_2_pca[indeksi, 0], X_2_pca[indeksi, 1],
-                   label=KRATKE_LABELE.get(lab, lab),
-                   color=boje_2[idx_boje], alpha=0.7, edgecolors="black", linewidths=0.3, s=50)
+    for color_idx, lab in enumerate(unique_2):
+        indices = [i for i, l in enumerate(labels_2) if l == lab]
+        ax.scatter(X_2_pca[indices, 0], X_2_pca[indices, 1],
+                   label=SHORT_LABELS.get(lab, lab),
+                   color=colors_2[color_idx], alpha=0.7, edgecolors="black", linewidths=0.3, s=50)
     ax.set_xlabel(f"PC1 ({pca_2.explained_variance_ratio_[0]:.1%})", fontsize=10)
     ax.set_ylabel(f"PC2 ({pca_2.explained_variance_ratio_[1]:.1%})", fontsize=10)
     ax.legend(fontsize=9)
@@ -359,19 +359,19 @@ for idx_z2, k_z2 in enumerate([4, 6]):
 
     # Klasifikacija
     X_tr2, X_te2, y_tr2, y_te2 = train_test_split(
-        X_2_skal, y_2, test_size=0.2, random_state=42, stratify=y_2
+        X_2_scaled, y_2, test_size=0.2, random_state=42, stratify=y_2
     )
     model_2 = LogisticRegression(max_iter=1000, random_state=42)
     model_2.fit(X_tr2, y_tr2)
     y_pred_2 = model_2.predict(X_te2)
-    tacnost_2 = np.mean(y_pred_2 == y_te2)
-    tacnost_2_po_k[k_z2] = tacnost_2
+    accuracy_2 = np.mean(y_pred_2 == y_te2)
+    accuracy_2_by_k[k_z2] = accuracy_2
 
-    ax.set_title(f"k={k_z2} — tacnost: {tacnost_2:.0%}", fontsize=11, fontweight="bold")
+    ax.set_title(f"k={k_z2} — accuracy: {accuracy_2:.0%}", fontsize=11, fontweight="bold")
 
     print(f"\n  --- Samo Bombina, k={k_z2} ---")
-    print(f"  Tacnost: {tacnost_2:.2%}")
-    print(classification_report(y_te2, y_pred_2, target_names=nazivi_2))
+    print(f"  Tacnost: {accuracy_2:.2%}")
+    print(classification_report(y_te2, y_pred_2, target_names=names_2))
 
 fig_z2.suptitle("PCA — samo sestrinske vrste Bombina (bez R. temporaria)",
                 fontsize=13, fontweight="bold")
@@ -381,10 +381,10 @@ plt.close(fig_z2)
 print("  Sacuvan grafikon: output/zadatak2_pca_2vrste.png")
 
 # Matrica konfuzije za 2 vrste (k=6)
-X_2_k6 = izgradi_kmer_matricu(sekvence_2, k=6)
-X_2_k6_skal = StandardScaler().fit_transform(X_2_k6)
+X_2_k6 = build_kmer_matrix(sequences_2, k=6)
+X_2_k6_scaled = StandardScaler().fit_transform(X_2_k6)
 X_tr2, X_te2, y_tr2, y_te2 = train_test_split(
-    X_2_k6_skal, y_2, test_size=0.2, random_state=42, stratify=y_2
+    X_2_k6_scaled, y_2, test_size=0.2, random_state=42, stratify=y_2
 )
 model_2k6 = LogisticRegression(max_iter=1000, random_state=42)
 model_2k6.fit(X_tr2, y_tr2)
@@ -392,7 +392,7 @@ y_pred_2k6 = model_2k6.predict(X_te2)
 
 cm_2 = confusion_matrix(y_te2, y_pred_2k6)
 fig, ax = plt.subplots(figsize=(6, 5))
-disp2 = ConfusionMatrixDisplay(confusion_matrix=cm_2, display_labels=nazivi_2)
+disp2 = ConfusionMatrixDisplay(confusion_matrix=cm_2, display_labels=names_2)
 disp2.plot(ax=ax, cmap="Oranges", colorbar=True)
 ax.set_title("Matrica konfuzije — 2 Bombina vrste (k=6)", fontsize=12, fontweight="bold")
 ax.set_xlabel("Predvidjena klasa", fontsize=11)
@@ -411,39 +411,39 @@ print("  ZADATAK 3: Poredenje klasifikatora (LR vs SVM vs Random Forest)")
 print("=" * 65)
 
 # Koristimo najbolji k iz Zadatka 1 (k=6) za fer poredenje
-k_z3 = najbolji_k
-X_z3 = izgradi_kmer_matricu(sekvence, k_z3)
-skaler_z3 = StandardScaler()
-X_z3_skal = skaler_z3.fit_transform(X_z3)
+k_z3 = best_k
+X_z3 = build_kmer_matrix(sequences, k_z3)
+scaler_z3 = StandardScaler()
+X_z3_scaled = scaler_z3.fit_transform(X_z3)
 
 X_tr3, X_te3, y_tr3, y_te3 = train_test_split(
-    X_z3_skal, y, test_size=0.2, random_state=42, stratify=y
+    X_z3_scaled, y, test_size=0.2, random_state=42, stratify=y
 )
 
-modeli = {
+models = {
     "Logisticka regresija": LogisticRegression(max_iter=1000, random_state=42),
     "SVM (linearni)":       SVC(kernel="linear", random_state=42),
     "Random Forest":        RandomForestClassifier(n_estimators=100, random_state=42),
 }
 
-rezultati_modela = {}
+model_results = {}
 fig_cm, axes_cm = plt.subplots(1, 3, figsize=(18, 5))
 
-for idx_m, (naziv_modela, model) in enumerate(modeli.items()):
-    print(f"\n  --- {naziv_modela} (k={k_z3}) ---")
+for idx_m, (model_name, model) in enumerate(models.items()):
+    print(f"\n  --- {model_name} (k={k_z3}) ---")
     model.fit(X_tr3, y_tr3)
     y_pred_m = model.predict(X_te3)
-    tacnost_m = np.mean(y_pred_m == y_te3)
-    rezultati_modela[naziv_modela] = tacnost_m
+    accuracy_m = np.mean(y_pred_m == y_te3)
+    model_results[model_name] = accuracy_m
 
-    print(f"  Tacnost: {tacnost_m:.2%}")
-    print(classification_report(y_te3, y_pred_m, target_names=nazivi_klasa))
+    print(f"  Tacnost: {accuracy_m:.2%}")
+    print(classification_report(y_te3, y_pred_m, target_names=class_names))
 
     # Matrica konfuzije
     cm_m = confusion_matrix(y_te3, y_pred_m)
-    disp_m = ConfusionMatrixDisplay(confusion_matrix=cm_m, display_labels=nazivi_klasa)
+    disp_m = ConfusionMatrixDisplay(confusion_matrix=cm_m, display_labels=class_names)
     disp_m.plot(ax=axes_cm[idx_m], cmap="Blues", colorbar=False)
-    axes_cm[idx_m].set_title(f"{naziv_modela}\n(tacnost: {tacnost_m:.1%})",
+    axes_cm[idx_m].set_title(f"{model_name}\n(accuracy: {accuracy_m:.1%})",
                              fontsize=11, fontweight="bold")
     axes_cm[idx_m].set_xlabel("Predvidjena klasa", fontsize=10)
     axes_cm[idx_m].set_ylabel("Stvarna klasa", fontsize=10)
@@ -455,17 +455,17 @@ fig_cm.savefig(os.path.join(OUTPUT_DIR, "zadatak3_poredenje_klasifikatora.png"),
 plt.close(fig_cm)
 print("  Sacuvan grafikon: output/zadatak3_poredenje_klasifikatora.png")
 
-# Grafikon poredenja tacnosti
+# Grafikon poredenja accuracies
 plt.figure(figsize=(9, 5))
-nazivi_m = list(rezultati_modela.keys())
-tacnosti_m = [rezultati_modela[n] * 100 for n in nazivi_m]
-boje_m = ["#3498db", "#e74c3c", "#2ecc71"]
-plt.barh(nazivi_m, tacnosti_m, color=boje_m, edgecolor="black", linewidth=0.5, height=0.5)
+names_m = list(model_results.keys())
+accuracies_m = [model_results[n] * 100 for n in names_m]
+colors_m = ["#3498db", "#e74c3c", "#2ecc71"]
+plt.barh(names_m, accuracies_m, color=colors_m, edgecolor="black", linewidth=0.5, height=0.5)
 plt.xlabel("Tacnost (%)", fontsize=12)
-plt.title(f"Poredenje tacnosti klasifikatora (k={k_z3}, sve 3 vrste)",
+plt.title(f"Poredenje accuracies klasifikatora (k={k_z3}, sve 3 vrste)",
           fontsize=13, fontweight="bold")
 plt.xlim(0, 105)
-for i, t in enumerate(tacnosti_m):
+for i, t in enumerate(accuracies_m):
     plt.text(t + 1, i, f"{t:.1f}%", va="center", fontsize=11, fontweight="bold")
 plt.grid(axis="x", alpha=0.3)
 plt.tight_layout()
@@ -488,19 +488,19 @@ print(f"""
 
   Podaci: Kompletni mitohondrijalni genomi (NCBI)
   Fragmentacija: prozor=1000bp, korak=500bp
-  Ukupno fragmenata: {len(sekvence)}
+  Ukupno fragmenata: {len(sequences)}
 
   ZADATAK 1 — Najbolji k:
-    k=3: {rezultati_k[3]:.2%}  |  k=4: {rezultati_k[4]:.2%}  |  k=5: {rezultati_k[5]:.2%}  |  k=6: {rezultati_k[6]:.2%}
-    Najbolji: k={najbolji_k} ({rezultati_k[najbolji_k]:.2%})
+    k=3: {results_k[3]:.2%}  |  k=4: {results_k[4]:.2%}  |  k=5: {results_k[5]:.2%}  |  k=6: {results_k[6]:.2%}
+    Najbolji: k={best_k} ({results_k[best_k]:.2%})
 
   ZADATAK 2 — Dvije sestrinske vrste (bez R. temporaria):
-    Tacnost (k=4): {tacnost_2_po_k.get(4, 0):.2%}
-    Tacnost (k=6): {tacnost_2_po_k.get(6, 0):.2%}
+    Tacnost (k=4): {accuracy_2_by_k.get(4, 0):.2%}
+    Tacnost (k=6): {accuracy_2_by_k.get(6, 0):.2%}
 
-  ZADATAK 3 — Poredenje klasifikatora (k={najbolji_k}):""")
-for naziv, tac in rezultati_modela.items():
-    print(f"    {naziv}: {tac:.2%}")
+  ZADATAK 3 — Poredenje klasifikatora (k={best_k}):""")
+for name, acc in model_results.items():
+    print(f"    {name}: {acc:.2%}")
 
 print(f"""
   Svi grafikoni sacuvani u: {OUTPUT_DIR}/
